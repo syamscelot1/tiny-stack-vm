@@ -33,6 +33,17 @@ function run(prog: Uint8Array, input: Uint8Array): [number, number] {
   const n = prog.length;
   let sp = 0, cp = 0, pc = 0, steps = 0, olen = 0, ipos = 0;
   M.fill(0);
+  // Decoded immediate per byte position (sign-extended): the hot loop
+  // reads one slot instead of re-assembling immediates on every PUSH,
+  // JMP, JZ, JNZ and CALL. Trap checks still run in the same order, so
+  // a truncated immediate traps 9 before its value is ever used.
+  const V = new Int32Array(n);
+  for (let i = 0; i < n; i++) {
+    const m = IMM[prog[i]];
+    if (m === 1) V[i] = (prog[i + 1] << 24) >> 24;
+    else if (m === 2) V[i] = ((prog[i + 1] | (prog[i + 2] << 8)) << 16) >> 16;
+    else if (m === 4) V[i] = prog[i + 1] | (prog[i + 2] << 8) | (prog[i + 3] << 16) | (prog[i + 4] << 24);
+  }
   for (;;) {
     if (steps === STEPS_MAX) return [10, olen];
     if (pc < 0 || pc >= n) return [9, olen];
@@ -45,12 +56,13 @@ function run(prog: Uint8Array, input: Uint8Array): [number, number] {
     if (sp < pops) return [2, olen];
     if (sp - pops + PUSH[op] > STACK_MAX) return [3, olen];
     const next = pc + 1 + imm;
+    const p0 = pc;
     pc = next;
     switch (op) {
       case 0x00: return [0, olen];
-      case 0x01: D[sp++] = (prog[next - 1] << 24) >> 24; break;
+      case 0x01: D[sp++] = V[p0]; break;
       case 0x02:
-        D[sp++] = prog[next - 4] | (prog[next - 3] << 8) | (prog[next - 2] << 16) | (prog[next - 1] << 24);
+        D[sp++] = V[p0];
         break;
       case 0x03: sp--; break;
       case 0x04: D[sp] = D[sp - 1]; sp++; break;
@@ -94,7 +106,7 @@ function run(prog: Uint8Array, input: Uint8Array): [number, number] {
         break;
       }
       case 0x30: case 0x31: case 0x32: {
-        const rel = ((prog[next - 2] | (prog[next - 1] << 8)) << 16) >> 16;
+        const rel = V[p0];
         if (op === 0x30) { pc = next + rel; break; }
         const v = D[--sp];
         if ((op === 0x31) === (v === 0)) pc = next + rel;
@@ -103,7 +115,7 @@ function run(prog: Uint8Array, input: Uint8Array): [number, number] {
       case 0x33:
         if (cp === CALLS_MAX) return [7, olen];
         C[cp++] = next;
-        pc = prog[next - 2] | (prog[next - 1] << 8);
+        pc = V[p0] & 0xffff;
         break;
       case 0x34:
         if (cp === 0) return [8, olen];
